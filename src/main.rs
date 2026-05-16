@@ -13,8 +13,21 @@ pub async fn update_sensor(
         *dist = payload.distance;
     }
 
-    let _ = sqlx::query("INSERT INTO sensor_logs (distance) VALUES ($1)")
+    let yellow = *personalspace::app::THRESHOLD_YELLOW.read().unwrap();
+    let red = *personalspace::app::THRESHOLD_RED.read().unwrap();
+    let collision = *personalspace::app::THRESHOLD_COLLISION.read().unwrap();
+
+    let status = if payload.distance <= collision { "KOLLISION!" }
+    else if payload.distance <= red { "Gefahr" }
+    else if payload.distance <= yellow { "Warnung" }
+    else { "Sicher" };
+
+    let _ = sqlx::query("INSERT INTO sensor_logs (distance, threshold_yellow, threshold_red, threshold_collision, status) VALUES ($1, $2, $3, $4, $5)")
         .bind(payload.distance)
+        .bind(yellow)
+        .bind(red)
+        .bind(collision)
+        .bind(status)
         .execute(&pool)
         .await;
 
@@ -63,19 +76,30 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
             let distance_cm = (duration.as_secs_f64() * 34300.0) / 2.0;
 
             if distance_cm > 2.0 && distance_cm < 400.0 {
-                // --- NEUES LOG: ERFOLG ---
                 println!("Distanz gemessen: {:.1} cm", distance_cm);
 
                 if let Ok(mut dist) = personalspace::app::SENSOR_DISTANCE.write() {
                     *dist = distance_cm;
                 }
 
-                let _ = sqlx::query("INSERT INTO sensor_logs (distance) VALUES ($1)")
+                let yellow = *personalspace::app::THRESHOLD_YELLOW.read().unwrap();
+                let red = *personalspace::app::THRESHOLD_RED.read().unwrap();
+                let collision = *personalspace::app::THRESHOLD_COLLISION.read().unwrap();
+
+                let status = if distance_cm <= collision { "KOLLISION!" }
+                else if distance_cm <= red { "Gefahr" }
+                else if distance_cm <= yellow { "Warnung" }
+                else { "Sicher" };
+
+                let _ = sqlx::query("INSERT INTO sensor_logs (distance, threshold_yellow, threshold_red, threshold_collision, status) VALUES ($1, $2, $3, $4, $5)")
                     .bind(distance_cm)
+                    .bind(yellow)
+                    .bind(red)
+                    .bind(collision)
+                    .bind(status)
                     .execute(&pool)
                     .await;
             } else {
-                // --- NEUES LOG: FEHLER / TIMEOUT ---
                 println!("Fehlmessung oder Timeout (wird ignoriert): {:.1} cm", distance_cm);
             }
 
@@ -120,6 +144,11 @@ async fn main() {
     .execute(&pool)
     .await
     .expect("Konnte die Tabelle nicht erstellen.");
+
+    let _ = sqlx::query("ALTER TABLE sensor_logs ADD COLUMN IF NOT EXISTS threshold_yellow DOUBLE PRECISION DEFAULT 100.0;").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE sensor_logs ADD COLUMN IF NOT EXISTS threshold_red DOUBLE PRECISION DEFAULT 50.0;").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE sensor_logs ADD COLUMN IF NOT EXISTS threshold_collision DOUBLE PRECISION DEFAULT 10.0;").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE sensor_logs ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'Sicher';").execute(&pool).await;
     
     log!("Datenbank bereit!");
 
@@ -132,12 +161,12 @@ async fn main() {
 
     let app = Router::new()
         .route("/api/sensor", post(update_sensor)) 
-        .layer(axum::Extension(pool)) 
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())
         })
         .fallback(leptos_axum::file_and_error_handler(shell))
+        .layer(axum::Extension(pool)) 
         .with_state(leptos_options);
 
     log!("Server lauscht auf http://{}", &addr);
