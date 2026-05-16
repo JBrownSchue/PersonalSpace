@@ -21,12 +21,13 @@ pub async fn update_sensor(
     "OK"
 }
 
-// --- ÜBERARBEITET: Robuster Hardware-Task mit detailliertem Logging ---
+// --- ÜBERARBEITET: Hardware-Task mit korrekten Hardware-Timings ---
 #[cfg(all(feature = "ssr", target_os = "linux"))]
 fn start_hardware_sensor(pool: sqlx::PgPool) {
     tokio::spawn(async move {
         use rppal::gpio::Gpio;
         use std::time::{Duration, Instant};
+        use std::thread; // WICHTIG: Für präzise Mikrosekunden-Schleifen
 
         let gpio = match Gpio::new() {
             Ok(g) => g,
@@ -37,24 +38,25 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
         };
 
         let mut trig = gpio.get(23).unwrap().into_output();
+        // Perfekt aufgepasst: echo braucht kein mut!
         let echo = gpio.get(24).unwrap().into_input();
 
         println!("[SYSTEM] Echter HC-SR04 Sensor-Task erfolgreich gestartet (GPIO 23/24).");
 
         loop {
-            // 1. Trigger zurücksetzen und kurzen Moment warten (verhindert Sensor-Stau)
+            // 1. Trigger zurücksetzen
             trig.set_low();
-            tokio::time::sleep(Duration::from_micros(5)).await;
+            thread::sleep(Duration::from_micros(5));
             
-            // 2. Trigger-Impuls senden (10 Mikrosekunden)
+            // 2. Trigger-Impuls senden (EXAKT 10 Mikrosekunden blockieren!)
             trig.set_high();
-            tokio::time::sleep(Duration::from_micros(10)).await;
+            thread::sleep(Duration::from_micros(10));
             trig.set_low();
 
             let start_timeout = Instant::now();
             let mut has_timeout = false;
 
-            // 3. Warten auf Echo-Start (max. 50ms)
+            // 3. Warten auf Echo-Start
             while echo.is_low() {
                 if start_timeout.elapsed() > Duration::from_millis(50) { 
                     has_timeout = true;
@@ -63,15 +65,15 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
             }
 
             if has_timeout {
-                println!("[WARNUNG] Sensor hat das Echo verpasst (Start-Timeout). Neustart...");
+                // Wenn er hier reinrutscht, war er zu langsam oder das Kabel sitzt locker
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                continue; // Überspringt den Rest und startet direkt einen neuen Versuch
+                continue; 
             }
 
             let echo_start = Instant::now();
             let mut echo_end = Instant::now();
 
-            // 4. Warten auf Echo-Ende (max. 50ms)
+            // 4. Warten auf Echo-Ende
             while echo.is_high() {
                 if echo_start.elapsed() > Duration::from_millis(50) { 
                     has_timeout = true;
@@ -81,7 +83,6 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
             }
 
             if has_timeout {
-                println!("[WARNUNG] Signal abgerissen (End-Timeout). Neustart...");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -92,7 +93,6 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
 
             // 6. Werte validieren und verarbeiten
             if distance_cm >= 2.0 && distance_cm <= 400.0 {
-                // ERFOLG: Wir drucken den Wert in die Konsole!
                 println!("[MESSUNG] Erfolgreich: {:.1} cm", distance_cm);
 
                 if let Ok(mut dist) = personalspace::app::SENSOR_DISTANCE.write() {
@@ -103,11 +103,9 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
                     .bind(distance_cm)
                     .execute(&pool)
                     .await;
-            } else {
-                println!("[ÜBERSPRUNGEN] Distanz ungültig (außerhalb 2-400cm): {:.1} cm", distance_cm);
             }
 
-            // Warte 500ms bis zur nächsten Messung
+            // Für die lange Pause zwischen den Messungen ist tokio::sleep hier exakt richtig!
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     });
