@@ -83,6 +83,7 @@ pub async fn check_db() -> Result<bool, ServerFnError> {
     Ok(res.is_ok())
 }
 
+// --- ÜBERARBEITETE AUDIO LOGIK ---
 #[allow(unused_variables)]
 fn play_alarm_sound(sound_type: &str) {
     #[cfg(target_arch = "wasm32")]
@@ -91,9 +92,21 @@ fn play_alarm_sound(sound_type: &str) {
             "beep" => "https://actions.google.com/sounds/v1/alarms/beep_short.ogg",
             "siren" => "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg",
             "buzzer" => "https://actions.google.com/sounds/v1/alarms/spaceship_alarm.ogg",
-            _ => return,
+            _ => "", // Leerer String stoppt das Audio
         };
-        let code = format!("new Audio('{}').play().catch(e => console.log('Audio Fehler:', e));", url);
+        
+        let code = format!(
+            "if (window.currentAlarmAudio) {{ \
+                window.currentAlarmAudio.pause(); \
+                window.currentAlarmAudio.currentTime = 0; \
+            }} \
+            if ('{0}' !== '') {{ \
+                window.currentAlarmAudio = new Audio('{0}'); \
+                window.currentAlarmAudio.loop = true; \
+                window.currentAlarmAudio.play().catch(e => console.log('Audio Fehler:', e)); \
+            }}",
+            url
+        );
         let _ = js_sys::eval(&code);
     }
 }
@@ -168,15 +181,21 @@ fn HomePage() -> impl IntoView {
         });
     });
 
+    // --- NEU: AUDIO MANAGEMENT EFFEKT ---
     Effect::new(move |_| {
         let status = status_class.get();
-        if sound_enabled.get() {
-            match status {
-                "status-yellow" => play_alarm_sound("beep"),
-                "status-red" => play_alarm_sound("siren"),
-                "status-collision" => play_alarm_sound("buzzer"),
-                _ => {}
-            }
+        let is_enabled = sound_enabled.get();
+
+        if !is_enabled {
+            play_alarm_sound("stop");
+            return;
+        }
+
+        match status {
+            "status-yellow" => play_alarm_sound("beep"),
+            "status-red" => play_alarm_sound("siren"),
+            "status-collision" => play_alarm_sound("buzzer"),
+            _ => play_alarm_sound("stop"), // Bei Status-Grün wird gestoppt!
         }
     });
 
@@ -315,7 +334,6 @@ fn HomePage() -> impl IntoView {
                 <div class="data-view">
                     
                     <div class="stats-banner">
-                        // Optimiert: DOM Elemente bleiben statisch, nur der rohe Zahlen-Text updatet sich!
                         <div class="stat-box">
                             <span class="stat-label">"Anzahl Gefahrenzustände:"</span>
                             <span class="stat-value danger">
@@ -344,7 +362,6 @@ fn HomePage() -> impl IntoView {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    // Optimiert: Die <For> Komponente zerstört keine Zeilen mehr, sondern diffed die IDs.
                                     <For
                                         each=move || logs_resource.get().unwrap_or_default()
                                         key=|entry| entry.id
