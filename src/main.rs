@@ -21,92 +21,77 @@ pub async fn update_sensor(
     "OK"
 }
 
-// --- ÜBERARBEITET: Hardware-Task mit korrekten Hardware-Timings ---
 #[cfg(all(feature = "ssr", target_os = "linux"))]
 fn start_hardware_sensor(pool: sqlx::PgPool) {
     tokio::spawn(async move {
         use rppal::gpio::Gpio;
         use std::time::{Duration, Instant};
-        use std::thread; // WICHTIG: Für präzise Mikrosekunden-Schleifen
+        use std::thread; // Wichtig für die präzisen 10 Mikrosekunden
 
         let gpio = match Gpio::new() {
             Ok(g) => g,
             Err(e) => {
-                println!("[FEHLER] GPIO konnte nicht initialisiert werden: {}", e);
+                println!("GPIO Fehler: {}", e);
                 return;
             }
         };
 
         let mut trig = gpio.get(23).unwrap().into_output();
-        // Perfekt aufgepasst: echo braucht kein mut!
         let echo = gpio.get(24).unwrap().into_input();
 
-        println!("[SYSTEM] Echter HC-SR04 Sensor-Task erfolgreich gestartet (GPIO 23/24).");
+        println!("Sensor gestartet. Messe alle 300ms...");
 
         loop {
-            // 1. Trigger zurücksetzen
+            // 1. Trigger kurz erden, damit der Sensor einen sauberen Zustand hat
             trig.set_low();
-            thread::sleep(Duration::from_micros(5));
-            
-            // 2. Trigger-Impuls senden (EXAKT 10 Mikrosekunden blockieren!)
+            thread::sleep(Duration::from_micros(2));
+
+            // 2. 10 Mikrosekunden Impuls senden
             trig.set_high();
             thread::sleep(Duration::from_micros(10));
             trig.set_low();
 
-            let start_timeout = Instant::now();
-            let mut has_timeout = false;
+            let timeout_start = Instant::now();
+            let mut start = Instant::now();
 
-            // 3. Warten auf Echo-Start
+            // 3. Warten bis Echo HIGH wird (max 30ms)
             while echo.is_low() {
-                if start_timeout.elapsed() > Duration::from_millis(50) { 
-                    has_timeout = true;
-                    break; 
-                }
+                if timeout_start.elapsed() > Duration::from_millis(30) { break; }
+                start = Instant::now();
             }
 
-            if has_timeout {
-                // Wenn er hier reinrutscht, war er zu langsam oder das Kabel sitzt locker
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue; 
-            }
+            let timeout_end = Instant::now();
+            let mut end = Instant::now();
 
-            let echo_start = Instant::now();
-            let mut echo_end = Instant::now();
-
-            // 4. Warten auf Echo-Ende
+            // 4. Warten bis Echo wieder LOW wird (max 30ms)
             while echo.is_high() {
-                if echo_start.elapsed() > Duration::from_millis(50) { 
-                    has_timeout = true;
-                    break; 
-                }
-                echo_end = Instant::now();
-            }
-
-            if has_timeout {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
+                if timeout_end.elapsed() > Duration::from_millis(30) { break; }
+                end = Instant::now();
             }
 
             // 5. Distanz berechnen
-            let duration = echo_end.duration_since(echo_start);
+            let duration = end.duration_since(start);
             let distance_cm = (duration.as_secs_f64() * 34300.0) / 2.0;
 
-            // 6. Werte validieren und verarbeiten
+            // 6. Auswerten und in Konsole drucken
             if distance_cm >= 2.0 && distance_cm <= 400.0 {
-                println!("[MESSUNG] Erfolgreich: {:.1} cm", distance_cm);
+                println!("-> Distanz: {:.1} cm", distance_cm);
 
+                // Nur echte, gültige Werte in die Datenbank und ins Web-UI schreiben
                 if let Ok(mut dist) = personalspace::app::SENSOR_DISTANCE.write() {
                     *dist = distance_cm;
                 }
-
                 let _ = sqlx::query("INSERT INTO sensor_logs (distance) VALUES ($1)")
                     .bind(distance_cm)
                     .execute(&pool)
                     .await;
+            } else {
+                // Wenn der Wert Quatsch ist (z.B. 0.0 oder Timeout), zeigen wir es dir in der Konsole an!
+                println!("-> Fehlmessung (ignoriert): {:.1} cm", distance_cm);
             }
 
-            // Für die lange Pause zwischen den Messungen ist tokio::sleep hier exakt richtig!
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            // Exakt 300ms warten bis zur nächsten Messung
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
     });
 }
