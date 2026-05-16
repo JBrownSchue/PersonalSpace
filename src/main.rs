@@ -26,81 +26,62 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
     tokio::spawn(async move {
         use rppal::gpio::Gpio;
         use std::time::{Duration, Instant};
-        use std::thread; // Wichtig für die präzisen 10 Mikrosekunden
 
         let gpio = match Gpio::new() {
             Ok(g) => g,
             Err(e) => {
-                println!("GPIO Fehler: {}", e);
+                leptos::logging::log!("GPIO Fehler: Hardware-Sensor konnte nicht initialisiert werden: {}", e);
                 return;
             }
         };
 
         let mut trig = gpio.get(23).unwrap().into_output();
-        let echo = gpio.get(24).unwrap().into_input();
+        let mut echo = gpio.get(24).unwrap().into_input();
 
-        println!("Sensor gestartet. Messe alle 300ms...");
+        leptos::logging::log!("Echter HC-SR04 Sensor-Task erfolgreich gestartet (GPIO 23/24).");
 
         loop {
-            // 1. Trigger kurz erden, damit der Sensor einen sauberen Zustand hat
             trig.set_low();
-            thread::sleep(Duration::from_micros(2));
-
-            // 2. 10 Mikrosekunden Impuls senden
+            tokio::time::sleep(Duration::from_micros(2)).await;
             trig.set_high();
-            thread::sleep(Duration::from_micros(10));
+            tokio::time::sleep(Duration::from_micros(10)).await;
             trig.set_low();
 
-            let timeout_start = Instant::now();
-            let mut start = Instant::now();
-
-            // 3. Warten bis Echo HIGH wird (max 30ms)
+            let start_timeout = Instant::now();
             while echo.is_low() {
-                if timeout_start.elapsed() > Duration::from_millis(30) { break; }
-                start = Instant::now();
+                if start_timeout.elapsed() > Duration::from_millis(30) { break; }
             }
+            let echo_start = Instant::now();
 
-            let timeout_end = Instant::now();
-            let mut end = Instant::now();
-
-            // 4. Warten bis Echo wieder LOW wird (max 30ms)
+            let mut echo_end = Instant::now();
             while echo.is_high() {
-                if timeout_end.elapsed() > Duration::from_millis(30) { break; }
-                end = Instant::now();
+                if echo_start.elapsed() > Duration::from_millis(30) { break; }
+                echo_end = Instant::now();
             }
 
-            // 5. Distanz berechnen
-            let duration = end.duration_since(start);
+            let duration = echo_end.duration_since(echo_start);
             let distance_cm = (duration.as_secs_f64() * 34300.0) / 2.0;
 
-            // 6. Auswerten und in Konsole drucken
-            if distance_cm >= 2.0 && distance_cm <= 400.0 {
-                println!("-> Distanz: {:.1} cm", distance_cm);
-
-                // Nur echte, gültige Werte in die Datenbank und ins Web-UI schreiben
+            if distance_cm > 2.0 && distance_cm < 400.0 {
                 if let Ok(mut dist) = personalspace::app::SENSOR_DISTANCE.write() {
                     *dist = distance_cm;
                 }
+
                 let _ = sqlx::query("INSERT INTO sensor_logs (distance) VALUES ($1)")
                     .bind(distance_cm)
                     .execute(&pool)
                     .await;
-            } else {
-                // Wenn der Wert Quatsch ist (z.B. 0.0 oder Timeout), zeigen wir es dir in der Konsole an!
-                println!("-> Fehlmessung (ignoriert): {:.1} cm", distance_cm);
             }
 
-            // Exakt 300ms warten bis zur nächsten Messung
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     });
 }
 
 #[cfg(not(all(feature = "ssr", target_os = "linux")))]
 fn start_hardware_sensor(_pool: sqlx::PgPool) {
-    leptos::logging::log!("Hinweis: Da du nicht auf Linux/Pi bist, bleibt der echte Hardware-Sensor inaktiv.");
+    leptos::logging::log!("Hinweis: Da du nicht auf Linux/Pi bist, bleibt der echte Hardware-Sensor inaktiv. Nutze Curl oder den Simulator!");
 }
-// -------------------------------------------------------------------------
 
 #[cfg(feature = "ssr")]
 #[tokio::main]
@@ -121,7 +102,7 @@ async fn main() {
         .max_connections(5)
         .connect(&db_url)
         .await
-        .expect("Fehler bei der Verbindung zu PostgreSQL.");
+        .expect("Fehler bei der Verbindung zu PostgreSQL. Läuft der Docker Container?");
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS sensor_logs (
