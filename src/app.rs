@@ -301,10 +301,10 @@ fn HomePage() -> impl IntoView {
                             <div class="status-item"><span class=move || if is_live_mode.get() { "status-icon green" } else { "status-icon yellow" }></span><span>{move || if is_live_mode.get() { "Live-Modus aktiv" } else { "Sensor simuliert" }}</span></div>
                             
                             <div class="status-item">
-                                <Suspense fallback=|| view! { <><span class="status-icon yellow"></span><span>"Prüfe DB..."</span></> }>
+                                <Transition fallback=|| view! { <><span class="status-icon yellow"></span><span>"Prüfe DB..."</span></> }>
                                     <span class=move || if db_status.get().unwrap_or(false) { "status-icon green" } else { "status-icon red" }></span>
                                     <span>{move || if db_status.get().unwrap_or(false) { "Datenbank verbunden" } else { "Datenbank-Verbindung fehlt" }}</span>
-                                </Suspense>
+                                </Transition>
                             </div>
                         </div>
                     </div>
@@ -315,7 +315,7 @@ fn HomePage() -> impl IntoView {
                 <div class="data-view">
                     
                     <div class="stats-banner">
-                        <Suspense fallback=|| view! { <p>"Lade Statistiken..."</p> }>
+                        <Transition fallback=|| view! { <p>"Lade Statistiken..."</p> }>
                             {move || stats_resource.get().map(|stats| view! {
                                 <div class="stat-box">
                                     <span class="stat-label">"Anzahl Gefahrenzustände:"</span>
@@ -326,7 +326,7 @@ fn HomePage() -> impl IntoView {
                                     <span class="stat-value collision">{stats.collision_count}</span>
                                 </div>
                             })}
-                        </Suspense>
+                        </Transition>
                     </div>
 
                     <div class="card log-table-card">
@@ -343,7 +343,7 @@ fn HomePage() -> impl IntoView {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <Suspense fallback=|| view! { <tr><td colspan="5">"Lade Daten..."</td></tr> }>
+                                    <Transition fallback=|| view! { <tr><td colspan="5">"Lade Daten..."</td></tr> }>
                                         {move || logs_resource.get().map(|entries| {
                                             entries.into_iter().map(|entry| {
                                                 view! {
@@ -357,7 +357,7 @@ fn HomePage() -> impl IntoView {
                                                 }
                                             }).collect_view()
                                         })}
-                                    </Suspense>
+                                    </Transition>
                                 </tbody>
                             </table>
                         </div>
