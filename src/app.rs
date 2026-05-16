@@ -301,10 +301,10 @@ fn HomePage() -> impl IntoView {
                             <div class="status-item"><span class=move || if is_live_mode.get() { "status-icon green" } else { "status-icon yellow" }></span><span>{move || if is_live_mode.get() { "Live-Modus aktiv" } else { "Sensor simuliert" }}</span></div>
                             
                             <div class="status-item">
-                                <Transition fallback=|| view! { <><span class="status-icon yellow"></span><span>"Prüfe DB..."</span></> }>
+                                <Suspense fallback=|| view! { <><span class="status-icon yellow"></span><span>"Prüfe DB..."</span></> }>
                                     <span class=move || if db_status.get().unwrap_or(false) { "status-icon green" } else { "status-icon red" }></span>
                                     <span>{move || if db_status.get().unwrap_or(false) { "Datenbank verbunden" } else { "Datenbank-Verbindung fehlt" }}</span>
-                                </Transition>
+                                </Suspense>
                             </div>
                         </div>
                     </div>
@@ -315,18 +315,19 @@ fn HomePage() -> impl IntoView {
                 <div class="data-view">
                     
                     <div class="stats-banner">
-                        <Transition fallback=|| view! { <p>"Lade Statistiken..."</p> }>
-                            {move || stats_resource.get().map(|stats| view! {
-                                <div class="stat-box">
-                                    <span class="stat-label">"Anzahl Gefahrenzustände:"</span>
-                                    <span class="stat-value danger">{stats.danger_count}</span>
-                                </div>
-                                <div class="stat-box">
-                                    <span class="stat-label">"Anzahl Kollisionen:"</span>
-                                    <span class="stat-value collision">{stats.collision_count}</span>
-                                </div>
-                            })}
-                        </Transition>
+                        // Optimiert: DOM Elemente bleiben statisch, nur der rohe Zahlen-Text updatet sich!
+                        <div class="stat-box">
+                            <span class="stat-label">"Anzahl Gefahrenzustände:"</span>
+                            <span class="stat-value danger">
+                                {move || stats_resource.get().map(|s| s.danger_count).unwrap_or(0)}
+                            </span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-label">"Anzahl Kollisionen:"</span>
+                            <span class="stat-value collision">
+                                {move || stats_resource.get().map(|s| s.collision_count).unwrap_or(0)}
+                            </span>
+                        </div>
                     </div>
 
                     <div class="card log-table-card">
@@ -343,21 +344,20 @@ fn HomePage() -> impl IntoView {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <Transition fallback=|| view! { <tr><td colspan="5">"Lade Daten..."</td></tr> }>
-                                        {move || logs_resource.get().map(|entries| {
-                                            entries.into_iter().map(|entry| {
-                                                view! {
-                                                    <tr>
-                                                        <td>{entry.id}</td>
-                                                        <td>{entry.created_at_str}</td>
-                                                        <td>{format!("{:.1} cm", entry.distance)}</td>
-                                                        <td>{entry.status}</td>
-                                                        <td>{format!("{:.0} / {:.0} / {:.0} cm", entry.threshold_yellow, entry.threshold_red, entry.threshold_collision)}</td>
-                                                    </tr>
-                                                }
-                                            }).collect_view()
-                                        })}
-                                    </Transition>
+                                    // Optimiert: Die <For> Komponente zerstört keine Zeilen mehr, sondern diffed die IDs.
+                                    <For
+                                        each=move || logs_resource.get().unwrap_or_default()
+                                        key=|entry| entry.id
+                                        children=|entry| view! {
+                                            <tr>
+                                                <td>{entry.id}</td>
+                                                <td>{entry.created_at_str.clone()}</td>
+                                                <td>{format!("{:.1} cm", entry.distance)}</td>
+                                                <td>{entry.status.clone()}</td>
+                                                <td>{format!("{:.0} / {:.0} / {:.0} cm", entry.threshold_yellow, entry.threshold_red, entry.threshold_collision)}</td>
+                                            </tr>
+                                        }
+                                    />
                                 </tbody>
                             </table>
                         </div>
