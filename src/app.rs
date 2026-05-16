@@ -83,7 +83,6 @@ pub async fn check_db() -> Result<bool, ServerFnError> {
     Ok(res.is_ok())
 }
 
-// --- ÜBERARBEITETE AUDIO LOGIK ---
 #[allow(unused_variables)]
 fn play_alarm_sound(sound_type: &str) {
     #[cfg(target_arch = "wasm32")]
@@ -92,7 +91,7 @@ fn play_alarm_sound(sound_type: &str) {
             "beep" => "https://actions.google.com/sounds/v1/alarms/beep_short.ogg",
             "siren" => "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg",
             "buzzer" => "https://actions.google.com/sounds/v1/alarms/spaceship_alarm.ogg",
-            _ => "", // Leerer String stoppt das Audio
+            _ => "",
         };
         
         let code = format!(
@@ -181,7 +180,6 @@ fn HomePage() -> impl IntoView {
         });
     });
 
-    // --- NEU: AUDIO MANAGEMENT EFFEKT ---
     Effect::new(move |_| {
         let status = status_class.get();
         let is_enabled = sound_enabled.get();
@@ -195,7 +193,7 @@ fn HomePage() -> impl IntoView {
             "status-yellow" => play_alarm_sound("beep"),
             "status-red" => play_alarm_sound("siren"),
             "status-collision" => play_alarm_sound("buzzer"),
-            _ => play_alarm_sound("stop"), // Bei Status-Grün wird gestoppt!
+            _ => play_alarm_sound("stop"),
         }
     });
 
