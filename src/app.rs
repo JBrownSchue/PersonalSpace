@@ -5,20 +5,24 @@ use leptos_router::{
     StaticSegment,
 };
 
-// Hilfsfunktion: Spielt den ausgewählten Ton über den Browser ab
+#[cfg(feature = "ssr")]
+pub static SENSOR_DISTANCE: std::sync::RwLock<f64> = std::sync::RwLock::new(150.0);
+
+#[server(GetDistance, "/api")]
+pub async fn get_distance() -> Result<f64, ServerFnError> {
+    let dist = *SENSOR_DISTANCE.read().unwrap();
+    Ok(dist)
+}
+
 fn play_alarm_sound(_sound_type: &str) {
-    // Wird nur im WebAssembly-Client ausgeführt (nicht auf dem Server)
     #[cfg(target_arch = "wasm32")]
     {
-        // Öffentliche, freie Alarmtöne
         let url = match _sound_type {
             "beep" => "https://actions.google.com/sounds/v1/alarms/beep_short.ogg",
             "siren" => "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg",
-            "buzzer" => "https://actions.google.com/sounds/v1/weapons/big_explosion_cut_off.ogg",
+            "buzzer" => "https://actions.google.com/sounds/v1/alarms/spaceship_alarm.ogg",
             _ => return,
         };
-        
-        // JS-Befehl zum Abspielen (catch verhindert Fehler, falls der Browser Autoplay blockiert)
         let code = format!("new Audio('{}').play().catch(e => console.log('Audio Fehler:', e));", url);
         let _ = js_sys::eval(&code);
     }
@@ -49,7 +53,6 @@ pub fn App() -> impl IntoView {
     view! {
         <Stylesheet id="leptos" href="/pkg/personalspace.css"/>
         <Title text="Sensor Control - Pro"/>
-
         <Router>
             <main class="app-container">
                 <Routes fallback=|| "Seite nicht gefunden.".into_view()>
@@ -62,24 +65,20 @@ pub fn App() -> impl IntoView {
 
 #[component]
 fn HomePage() -> impl IntoView {
-    // Zustände für die Sensor-Simulation
     let distance = RwSignal::new(150.0);
     
-    // Benutzereinstellbare Grenzwerte
     let threshold_yellow = RwSignal::new(100.0);
     let threshold_red = RwSignal::new(50.0);
     let threshold_collision = RwSignal::new(10.0);
 
-    // Zustände für das Layout
     let custom_text = RwSignal::new("Alles in Ordnung! Distanz: {dist:.1} cm".to_string());
-    let update_interval = RwSignal::new(100.0);
+    let update_interval = RwSignal::new(500.0); // Abfrage-Intervall (0.5 Sekunden)
     let is_recording = RwSignal::new(true);
     let show_timestamps = RwSignal::new(true);
-    
-    // Zustand für den ausgewählten Alarmton
     let selected_sound = RwSignal::new("beep".to_string());
+    
+    let is_live_mode = RwSignal::new(false);
 
-    // Berechneter Status für die Ampel
     let status_class = Memo::new(move |_| {
         let d = distance.get();
         if d <= threshold_collision.get() { "status-collision" }
@@ -88,19 +87,31 @@ fn HomePage() -> impl IntoView {
         else { "status-green" }
     });
 
-    // NEU: Automatischer Alarm, sobald der Zustand auf Rot oder Kollision springt
     Effect::new(move |_| {
         let status = status_class.get();
         let sound = selected_sound.get();
-        
         if status == "status-collision" || status == "status-red" {
-            if sound != "mute" {
-                play_alarm_sound(&sound);
-            }
+            if sound != "mute" { play_alarm_sound(&sound); }
         }
     });
 
-    // Berechneter benutzerdefinierter Text
+    Effect::new(move |_| {
+        if is_live_mode.get() {
+            let interval = update_interval.get() as u64;
+            let handle = set_interval_with_handle(move || {
+                leptos::task::spawn_local(async move {
+                    if let Ok(dist) = get_distance().await {
+                        distance.set(dist); // UI updaten
+                    }
+                });
+            }, std::time::Duration::from_millis(interval));
+
+            on_cleanup(move || {
+                if let Ok(h) = handle { h.clear(); }
+            });
+        }
+    });
+
     let formatted_text = Memo::new(move |_| {
         custom_text.get().replace("{dist:.1}", &format!("{:.1}", distance.get()))
     });
@@ -113,58 +124,36 @@ fn HomePage() -> impl IntoView {
 
             <div class="dashboard-grid">
                 
-                // --- Linke Spalte ---
                 <div class="column">
                     <div class="card settings-card">
                         <h3>"Grenzwerte (cm)"</h3>
-                        <div class="input-group">
-                            <label>"Gelb ab:"</label>
-                            <input type="number" 
-                                prop:value=threshold_yellow 
-                                on:input=move |ev| {
-                                    if let Ok(val) = event_target_value(&ev).parse::<f64>() {
-                                        threshold_yellow.set(val);
-                                    }
-                                } 
-                            />
-                        </div>
-                        <div class="input-group">
-                            <label>"Rot ab:"</label>
-                            <input type="number" 
-                                prop:value=threshold_red 
-                                on:input=move |ev| {
-                                    if let Ok(val) = event_target_value(&ev).parse::<f64>() {
-                                        threshold_red.set(val);
-                                    }
-                                } 
-                            />
-                        </div>
-                        <div class="input-group">
-                            <label>"Kollision ab:"</label>
-                            <input type="number" 
-                                prop:value=threshold_collision 
-                                on:input=move |ev| {
-                                    if let Ok(val) = event_target_value(&ev).parse::<f64>() {
-                                        threshold_collision.set(val);
-                                    }
-                                } 
-                            />
-                        </div>
+                        <div class="input-group"><label>"Gelb ab:"</label><input type="number" prop:value=threshold_yellow on:input=move |ev| { if let Ok(val) = event_target_value(&ev).parse::<f64>() { threshold_yellow.set(val); } } /></div>
+                        <div class="input-group"><label>"Rot ab:"</label><input type="number" prop:value=threshold_red on:input=move |ev| { if let Ok(val) = event_target_value(&ev).parse::<f64>() { threshold_red.set(val); } } /></div>
+                        <div class="input-group"><label>"Kollision ab:"</label><input type="number" prop:value=threshold_collision on:input=move |ev| { if let Ok(val) = event_target_value(&ev).parse::<f64>() { threshold_collision.set(val); } } /></div>
                     </div>
 
                     <div class="card simulation-card">
-                        <h3>"Sensor Simulation"</h3>
-                        <input type="range" min="0" max="400" step="1"
-                            prop:value=distance
-                            on:input=move |ev| {
-                                distance.set(event_target_value(&ev).parse().unwrap_or(0.0));
-                            }
-                        />
-                        <p class="help-text">"Schieberegler bewegen, um HC-SR04 Messung zu simulieren."</p>
+                        <h3>"Sensor Steuerung"</h3>
+                        <div class="toggle-group">
+                            <label>"Live-Modus (Raspberry Pi)"</label>
+                            <label class="switch">
+                                <input type="checkbox" prop:checked=is_live_mode on:click=move |_| is_live_mode.update(|v| *v = !*v) />
+                                <span class="slider round"></span>
+                            </label>
+                        </div>
+                        
+                        <div style=move || if is_live_mode.get() { "opacity: 0.3; pointer-events: none;" } else { "" }>
+                            <input type="range" min="0" max="400" step="1"
+                                prop:value=distance
+                                on:input=move |ev| {
+                                    distance.set(event_target_value(&ev).parse().unwrap_or(0.0));
+                                }
+                            />
+                            <p class="help-text">"Schieberegler bewegen, um Messung manuell zu simulieren."</p>
+                        </div>
                     </div>
                 </div>
 
-                // --- Mittlere Spalte ---
                 <div class="column">
                     <div class="card traffic-light-card">
                         <h2>"Status Anzeige"</h2>
@@ -191,7 +180,7 @@ fn HomePage() -> impl IntoView {
                         <h3>"Einstellungen"</h3>
                         <div class="input-group">
                             <label>"Update-Intervall (ms):"</label>
-                            <input type="number" prop:value=update_interval />
+                            <input type="number" prop:value=update_interval on:input=move |ev| { if let Ok(val) = event_target_value(&ev).parse::<f64>() { update_interval.set(val); } }/>
                         </div>
                         <div class="input-group vertical">
                             <label>"Anzeige Warnungstext:"</label>
@@ -200,28 +189,21 @@ fn HomePage() -> impl IntoView {
                         <div class="input-group vertical">
                             <label>"Alarmton:"</label>
                             <div class="sound-select-row">
-                                <select 
-                                    prop:value=selected_sound
-                                    on:change=move |ev| selected_sound.set(event_target_value(&ev))
-                                >
+                                <select prop:value=selected_sound on:change=move |ev| selected_sound.set(event_target_value(&ev))>
                                     <option value="beep">"Beep (Standard)"</option>
                                     <option value="siren">"Sirene"</option>
                                     <option value="buzzer">"Buzzer"</option>
                                     <option value="mute">"Stumm"</option>
                                 </select>
-                                // Manueller Test-Button
                                 <button class="btn-test" on:click=move |_| {
                                     let sound = selected_sound.get();
-                                    if sound != "mute" {
-                                        play_alarm_sound(&sound);
-                                    }
+                                    if sound != "mute" { play_alarm_sound(&sound); }
                                 }>"Test"</button>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                // --- Rechte Spalte ---
                 <div class="column">
                     <div class="card distance-card">
                         <h3>"Aktuelle Messdaten"</h3>
@@ -235,17 +217,11 @@ fn HomePage() -> impl IntoView {
                         <h3>"Daten-Aufzeichnung"</h3>
                         <div class="toggle-group">
                             <label>"Aufzeichnung läuft"</label>
-                            <label class="switch">
-                                <input type="checkbox" prop:checked=is_recording on:click=move |_| is_recording.update(|v| *v = !*v) />
-                                <span class="slider round"></span>
-                            </label>
+                            <label class="switch"><input type="checkbox" prop:checked=is_recording on:click=move |_| is_recording.update(|v| *v = !*v) /><span class="slider round"></span></label>
                         </div>
                         <div class="toggle-group">
                             <label>"Zeitstempel anzeigen"</label>
-                            <label class="switch">
-                                <input type="checkbox" prop:checked=show_timestamps on:click=move |_| show_timestamps.update(|v| *v = !*v) />
-                                <span class="slider round"></span>
-                            </label>
+                            <label class="switch"><input type="checkbox" prop:checked=show_timestamps on:click=move |_| show_timestamps.update(|v| *v = !*v) /><span class="slider round"></span></label>
                         </div>
                         <div class="input-group vertical">
                             <label>"Dateiname:"</label>
@@ -255,18 +231,9 @@ fn HomePage() -> impl IntoView {
 
                     <div class="card system-status-card">
                         <h3>"System-Status"</h3>
-                        <div class="status-item">
-                            <span class="status-icon green"></span>
-                            <span>"Raspberry Pi verbunden"</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-icon green"></span>
-                            <span>"HC-SR04 Sensor aktiv"</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-icon red"></span>
-                            <span>"Datenbank-Verbindung fehlt"</span>
-                        </div>
+                        <div class="status-item"><span class="status-icon green"></span><span>"Raspberry Pi verbunden"</span></div>
+                        <div class="status-item"><span class=move || if is_live_mode.get() { "status-icon green" } else { "status-icon yellow" }></span><span>{move || if is_live_mode.get() { "Live-Modus aktiv" } else { "Sensor simuliert" }}</span></div>
+                        <div class="status-item"><span class="status-icon red"></span><span>"Datenbank-Verbindung fehlt"</span></div>
                     </div>
                 </div>
 
