@@ -63,6 +63,9 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
             let distance_cm = (duration.as_secs_f64() * 34300.0) / 2.0;
 
             if distance_cm > 2.0 && distance_cm < 400.0 {
+                // --- NEUES LOG: ERFOLG ---
+                println!("Distanz gemessen: {:.1} cm", distance_cm);
+
                 if let Ok(mut dist) = personalspace::app::SENSOR_DISTANCE.write() {
                     *dist = distance_cm;
                 }
@@ -71,6 +74,9 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
                     .bind(distance_cm)
                     .execute(&pool)
                     .await;
+            } else {
+                // --- NEUES LOG: FEHLER / TIMEOUT ---
+                println!("Fehlmessung oder Timeout (wird ignoriert): {:.1} cm", distance_cm);
             }
 
             tokio::time::sleep(Duration::from_millis(500)).await;
