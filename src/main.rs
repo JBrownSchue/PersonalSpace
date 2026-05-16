@@ -35,10 +35,10 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
             }
         };
 
-        let mut trig = gpio.get(23).unwrap().into_output();
+        let mut trig = gpio.get(18).unwrap().into_output();
         let echo = gpio.get(24).unwrap().into_input();
 
-        leptos::logging::log!("Echter HC-SR04 Sensor-Task erfolgreich gestartet (GPIO 23/24).");
+        leptos::logging::log!("Echter HC-SR04 Sensor-Task erfolgreich gestartet (GPIO 18/24).");
 
         loop {
             trig.set_low();
