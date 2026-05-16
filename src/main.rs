@@ -36,7 +36,7 @@ fn start_hardware_sensor(pool: sqlx::PgPool) {
             }
         };
 
-        let trig = gpio.get(23).unwrap().into_output();
+        let mut trig = gpio.get(23).unwrap().into_output();
         let echo = gpio.get(24).unwrap().into_input();
 
         println!("[SYSTEM] Echter HC-SR04 Sensor-Task erfolgreich gestartet (GPIO 23/24).");
